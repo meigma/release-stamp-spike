@@ -1,0 +1,3 @@
+# Probe file: exists only to test whether Release Please can stamp a YAML value
+# through a jsonpath extra-file entry. Nothing consumes it.
+version: 0.0.0

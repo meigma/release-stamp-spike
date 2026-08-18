@@ -1,0 +1,107 @@
+name: Verify setup guard
+
+# Exercises the composite's version/protocol guard on both acquisition paths:
+# the supported installed path must fail closed on mismatch, while the
+# unsupported cli-path must warn and continue.
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Which guard scenario to exercise.
+        required: true
+        type: choice
+        options:
+          - installed-match
+          - installed-mismatch
+          - cli-path-match
+          - cli-path-mismatch
+
+permissions: {}
+
+jobs:
+  guard:
+    name: ${{ inputs.scenario }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: 2026.8.8
+          mise_toml: |
+            [tools]
+            go = "1.26.6"
+          install_args: go
+          cache: true
+
+      - name: Prepare scenario
+        id: prep
+        env:
+          SCENARIO: ${{ inputs.scenario }}
+        run: |
+          set -euo pipefail
+
+          case "${SCENARIO}" in
+            installed-match)
+              ;;
+            installed-mismatch)
+              # Change only the action's expected protocol.
+              sed -i 's/EXPECTED_PROTOCOL: 1/EXPECTED_PROTOCOL: 2/' .github/actions/setup-cli/action.yml
+              grep -n 'EXPECTED_PROTOCOL' .github/actions/setup-cli/action.yml
+              ;;
+            cli-path-match)
+              go build -ldflags "-X main.version=$(grep -A2 'x-release-please-start-version' .github/actions/setup-cli/action.yml | grep DEFAULT_VERSION | awk '{print $2}') -X main.commit=${GITHUB_SHA}" -o /tmp/stamp-cli .
+              echo "cli-path=/tmp/stamp-cli" >>"${GITHUB_OUTPUT}"
+              ;;
+            cli-path-mismatch)
+              # Off-contract binary: different protocol literal and version.
+              sed -i 's/const protocolLiteral = 1/const protocolLiteral = 7/' main.go
+              go build -ldflags "-X main.version=0.0.0-off-contract -X main.commit=${GITHUB_SHA}" -o /tmp/stamp-cli .
+              echo "cli-path=/tmp/stamp-cli" >>"${GITHUB_OUTPUT}"
+              ;;
+          esac
+
+      - name: Run setup (expected to succeed)
+        id: setup-ok
+        if: inputs.scenario == 'installed-match' || inputs.scenario == 'cli-path-match' || inputs.scenario == 'cli-path-mismatch'
+        uses: ./.github/actions/setup-cli
+        with:
+          cli-path: ${{ steps.prep.outputs.cli-path }}
+
+      - name: Report successful setup
+        if: steps.setup-ok.outcome == 'success'
+        env:
+          REPORTED_VERSION: ${{ steps.setup-ok.outputs.reported-version }}
+          REPORTED_PROTOCOL: ${{ steps.setup-ok.outputs.reported-protocol }}
+          RESOLVED_PATH: ${{ steps.setup-ok.outputs.cli-path }}
+        run: |
+          set -euo pipefail
+          echo "GUARD_RESULT=success"
+          echo "GUARD_VERSION=${REPORTED_VERSION}"
+          echo "GUARD_PROTOCOL=${REPORTED_PROTOCOL}"
+          echo "GUARD_PATH=${RESOLVED_PATH}"
+
+      - name: Run setup (expected to fail closed)
+        id: setup-fail
+        if: inputs.scenario == 'installed-mismatch'
+        continue-on-error: true
+        uses: ./.github/actions/setup-cli
+
+      - name: Assert fail-closed
+        if: inputs.scenario == 'installed-mismatch'
+        env:
+          OUTCOME: ${{ steps.setup-fail.outcome }}
+        run: |
+          set -euo pipefail
+          echo "GUARD_OUTCOME=${OUTCOME}"
+          if [[ "${OUTCOME}" != "failure" ]]; then
+            echo "::error::Installed path did not fail closed on protocol mismatch."
+            exit 1
+          fi
+          echo "installed path failed closed, as required"

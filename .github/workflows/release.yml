@@ -1,0 +1,71 @@
+name: Release
+
+# Builds the stamped binary for a tag, attests it, and uploads it to the release
+# Release Please already created. Deliberately minimal: spike C tests stamping and
+# the guard, not GoReleaser.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions: {}
+
+jobs:
+  assets:
+    name: Publish release assets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: 2026.8.8
+          mise_toml: |
+            [tools]
+            go = "1.26.6"
+          install_args: go
+          cache: true
+
+      - name: Build stamped archive
+        id: build
+        run: |
+          set -euo pipefail
+
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+
+          go build \
+            -trimpath \
+            -ldflags "-s -w -X main.version=${version} -X main.commit=${GITHUB_SHA}" \
+            -o dist/stamp-cli \
+            .
+
+          archive="stamp-cli_${version}_linux_amd64.tar.gz"
+          tar -czf "dist/${archive}" -C dist stamp-cli
+          (cd dist && sha256sum "${archive}" > checksums.txt)
+
+          echo "archive=dist/${archive}" >>"${GITHUB_OUTPUT}"
+          echo "version=${version}" >>"${GITHUB_OUTPUT}"
+
+          ./dist/stamp-cli version
+
+      - name: Attest the archive
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.build.outputs.archive }}
+
+      - name: Upload assets to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCHIVE: ${{ steps.build.outputs.archive }}
+        run: |
+          set -euo pipefail
+          gh release upload "${GITHUB_REF_NAME}" "${ARCHIVE}" dist/checksums.txt --clobber
