@@ -48,3 +48,9 @@ func main() {
 
 // protocolString renders the protocol for shell comparison.
 func protocolString() string { return strconv.Itoa(protocolLiteral) }
+
+// contract reports the stamped contract as a single line, used by the guard's
+// human-readable output.
+func contract() string {
+	return fmt.Sprintf("version=%s protocol=%s commit=%s", version, protocolString(), commit)
+}
